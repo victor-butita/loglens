@@ -65,3 +65,6 @@ go run .
 
 # Open in your browser
 http://localhost:8080
+
+
+![6EC2925F-E10F-45C8-9E90-E6F4C241B061_1_105_c](https://github.com/user-attachments/assets/6b16ccc1-1749-4b36-98d6-4ba53882f54f)
