@@ -1,0 +1,5 @@
+{"level":"info","timestamp":"2023-10-27T10:00:01Z","message":"User login successful","details":{"userId":"user-123","ip":"192.168.1.10"}}
+{"level":"info","timestamp":"2023-10-27T10:00:02Z","message":"Data requested","details":{"resource":"/api/data"}}
+{"level":"warn","timestamp":"2023-10-27T10:00:03Z","message":"API key is nearing expiration","details":{"expiry":"2023-11-01T00:00:00Z"}}
+{"level":"error","timestamp":"2023-10-27T10:00:04Z","message":"Failed to connect to database","details":{"error":"connection refused","host":"db.internal"}}
+{"level":"info","timestamp":"2023-10-27T10:00:05Z","message":"User logout","details":{"userId":"user-123"}}
