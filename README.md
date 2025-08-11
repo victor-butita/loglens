@@ -66,5 +66,9 @@ go run .
 # Open in your browser
 http://localhost:8080
 
+![E2B26E2A-2D32-4012-94C2-6E2FDC9E589D](https://github.com/user-attachments/assets/51513207-a016-4961-b3a8-76dace8659b9)
 
-![6EC2925F-E10F-45C8-9E90-E6F4C241B061_1_105_c](https://github.com/user-attachments/assets/6b16ccc1-1749-4b36-98d6-4ba53882f54f)
+
+
+![6EC2925F-E10F-45C8-9E90-E6F4C241B061_1_105_c](https://github.com/user-attachments/assets/47792921-b3df-4943-8f8f-8d363ae79108)
+
