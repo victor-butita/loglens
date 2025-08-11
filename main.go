@@ -1,70 +1,92 @@
-// Every Go program starts with a package declaration.
-// `main` is special: it tells Go that this package should be compiled into an executable program.
 package main
 
-// The import statement lists all the packages our program needs.
 import (
-	"bufio"       // For reading text line-by-line efficiently
-	"encoding/json" // For parsing JSON data
-	"fmt"         // For formatted printing to the console
-	"os"          // For interacting with the Operating System, like reading files
+	"bufio"
+	"encoding/json"
+	"fmt"
+	"os"
+	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
-// The main function is the entry point of our program.
-func main() {
-	// 1. Open the log file.
-	// os.Open returns two values: a pointer to the file and an error.
-	file, err := os.Open("logs.jsonl")
-	// 2. Always check for errors! This is a fundamental concept in Go.
-	// If `err` is not `nil`, it means something went wrong opening the file.
-	if err != nil {
-		fmt.Println("Error opening file:", err)
-		return // Exit the program if we can't open the file.
-	}
-	// 3. `defer` is a special Go keyword. It schedules the `file.Close()` call
-	// to be run just before the `main` function exits. This ensures the file
-	// is always closed, even if errors occur later.
-	defer file.Close()
+// --- Step 1: Define the Model ---
+type model struct {
+	logEntries []map[string]interface{}
+}
 
-	// 4. Create a new "scanner" to read the file line by line.
-	// This is more efficient than reading the whole file into memory at once.
-	scanner := bufio.NewScanner(file)
+// Init is the first function that will be called. It returns an initial command.
+func (m model) Init() tea.Cmd {
+	return watchLogFile()
+}
 
-	// 5. Loop through the file, one line at a time.
-	// `scanner.Scan()` reads the next line and returns `true` if it was successful.
-	for scanner.Scan() {
-		// Get the text of the current line.
-		line := scanner.Text()
+// --- Step 2: Define Messages ---
+type allLogsReadMsg struct {
+	entries []map[string]interface{}
+}
 
-		// 6. We need a place to store the parsed JSON. Since we don't know the exact
-		// structure of every log line, we use a map. `map[string]interface{}` means
-		// the keys are strings, and the values can be of any type (string, number, another map, etc.).
-		var logEntry map[string]interface{}
-
-		// 7. Parse the JSON. `json.Unmarshal` takes the JSON data as a slice of bytes
-		// and a pointer to the variable where it should store the result.
-		if err := json.Unmarshal([]byte(line), &logEntry); err != nil {
-			// If parsing fails, print the raw line and an error message, then continue to the next line.
-			fmt.Println("Error parsing JSON:", err)
-			fmt.Println("Raw line:", line)
-			continue
-		}
-
-		// 8. "Pretty-print" the parsed JSON. `json.MarshalIndent` converts the Go map
-		// back into JSON, but with nice indentation for readability.
-		prettyJSON, err := json.MarshalIndent(logEntry, "", "  ") // Use 2 spaces for indentation.
+// This command reads the entire file and returns one single message with all the data.
+func watchLogFile() tea.Cmd {
+	return func() tea.Msg {
+		file, err := os.Open("logs.jsonl")
 		if err != nil {
-			fmt.Println("Error formatting JSON:", err)
-			continue
+			fmt.Println("Error opening file:", err)
+			return nil
+		}
+		defer file.Close()
+
+		var allEntries []map[string]interface{}
+		scanner := bufio.NewScanner(file)
+		for scanner.Scan() {
+			line := scanner.Text()
+			var logEntry map[string]interface{}
+			if err := json.Unmarshal([]byte(line), &logEntry); err == nil {
+				allEntries = append(allEntries, logEntry)
+			}
+		}
+		// Let's add a delay to simulate a slow file read.
+		time.Sleep(1 * time.Second)
+
+		// Return one single message containing all the log entries.
+		return allLogsReadMsg{entries: allEntries}
+	}
+}
+
+// --- Step 3: Define the Update function ---
+func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		if msg.String() == "q" || msg.String() == "ctrl+c" {
+			return m, tea.Quit
 		}
 
-		// 9. Print the final, formatted result to the console.
-		fmt.Println(string(prettyJSON))
-		fmt.Println("---") // Add a separator for clarity
+	case allLogsReadMsg:
+		m.logEntries = msg.entries
+		return m, nil
 	}
 
-	// Finally, check if the scanner itself encountered any errors during the process.
-	if err := scanner.Err(); err != nil {
-		fmt.Println("Error reading file:", err)
+	return m, nil
+}
+
+// --- Step 4: Define the View function ---
+func (m model) View() string {
+	s := "LogLens - Reading logs...\n\n"
+	if len(m.logEntries) > 0 {
+		s = "LogLens - Logs loaded!\n\n"
+	}
+	s += fmt.Sprintf("%d log entries loaded.\n\n", len(m.logEntries))
+	s += "Press 'q' to quit.\n"
+	return s
+}
+
+// --- Step 5: Run the application ---
+func main() {
+	// Create a new Bubble Tea program. We pass it the initial state of our model.
+	// The program will automatically call the Init method on our model.
+	p := tea.NewProgram(model{logEntries: []map[string]interface{}{}}, tea.WithAltScreen())
+
+	if _, err := p.Run(); err != nil {
+		fmt.Println("Error running program:", err)
+		os.Exit(1)
 	}
 }
