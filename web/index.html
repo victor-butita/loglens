@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LogLens - Web UI</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>LogLens</h1>
+            <input type="text" id="filterInput" placeholder="Filter logs...">
+        </header>
+
+        <div id="drop-area">
+            <h3>Drag & Drop Log File Here</h3>
+            <p>or</p>
+            <input type="file" id="fileElem" style="display: none;">
+            <label class="button" for="fileElem">Select File</label>
+        </div>
+
+        <div class="main-content">
+            <div id="log-list" class="pane">
+                <!-- Log summaries will be injected here -->
+            </div>
+            <div id="detail-view" class="pane">
+                <pre><code><!-- Selected log detail will be here --></code></pre>
+            </div>
+        </div>
+    </div>
+    <script src="script.js"></script>
+</body>
+</html>

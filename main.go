@@ -4,192 +4,132 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
-	"os"
-	"strings"
+	"log"
+	"net/http"
+	"sync"
 
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/glamour"
-	"github.com/charmbracelet/lipgloss"
+	"github.com/gorilla/websocket"
 )
 
-// --- Step 1: Define the Model ---
-type model struct {
-	logEntries      []map[string]interface{}
-	filteredEntries []map[string]interface{} // The logs that match the filter
-	selectedIndex   int
-	filterInput     textinput.Model // The text input component for our filter
-	glamourRenderer *glamour.TermRenderer // For syntax highlighting JSON
-	width           int
-	height          int
+// upgrader is used to upgrade an HTTP connection to a WebSocket connection.
+var upgrader = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool {
+		return true // Allow all connections
+	},
 }
 
-// Helper function to create the initial model
-func initialModel() model {
-	ti := textinput.New()
-	ti.Placeholder = "Filter logs..."
-	ti.Focus() // Make the text input active
-	ti.CharLimit = 156
-	ti.Width = 50
+// hub manages all active WebSocket connections.
+type Hub struct {
+	clients    map[*websocket.Conn]bool
+	broadcast  chan []byte
+	register   chan *websocket.Conn
+	unregister chan *websocket.Conn
+	mu         sync.Mutex
+}
 
-	// Setup the glamour renderer
-	renderer, _ := glamour.NewTermRenderer(
-		glamour.WithAutoStyle(),
-		glamour.WithWordWrap(0), // We handle word wrap ourselves
-	)
-
-	return model{
-		logEntries:      []map[string]interface{}{},
-		filteredEntries: []map[string]interface{}{},
-		selectedIndex:   0,
-		filterInput:     ti,
-		glamourRenderer: renderer,
+// newHub creates a new Hub.
+func newHub() *Hub {
+	return &Hub{
+		clients:    make(map[*websocket.Conn]bool),
+		broadcast:  make(chan []byte),
+		register:   make(chan *websocket.Conn),
+		unregister: make(chan *websocket.Conn),
 	}
 }
 
-func (m model) Init() tea.Cmd {
-	return tea.Batch(textinput.Blink, watchLogFile())
+// run starts the hub's event loop.
+func (h *Hub) run() {
+	for {
+		select {
+		case client := <-h.register:
+			h.mu.Lock()
+			h.clients[client] = true
+			h.mu.Unlock()
+		case client := <-h.unregister:
+			h.mu.Lock()
+			if _, ok := h.clients[client]; ok {
+				delete(h.clients, client)
+				client.Close()
+			}
+			h.mu.Unlock()
+		case message := <-h.broadcast:
+			h.mu.Lock()
+			for client := range h.clients {
+				if err := client.WriteMessage(websocket.TextMessage, message); err != nil {
+					// Client is likely disconnected, remove them.
+					client.Close()
+					delete(h.clients, client)
+				}
+			}
+			h.mu.Unlock()
+		}
+	}
 }
 
-// --- Step 2: Define Messages ---
-type allLogsReadMsg struct{ entries []map[string]interface{} }
+func main() {
+	hub := newHub()
+	go hub.run()
 
-func watchLogFile() tea.Cmd {
-	return func() tea.Msg {
-		file, err := os.Open("logs.jsonl")
-		if err != nil { return nil }
+	// 1. Serve the static web files (HTML, CSS, JS)
+	http.Handle("/", http.FileServer(http.Dir("./web")))
+
+	// 2. Handle WebSocket connections
+	http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			log.Println("Upgrade error:", err)
+			return
+		}
+		hub.register <- conn
+		// We don't read from the client in this simple case, but a real app might.
+		// When the client disconnects, the WriteMessage in the hub will fail,
+		// and the client will be unregistered.
+	})
+
+	// 3. Handle file uploads
+	http.HandleFunc("/upload", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Invalid request method", http.StatusMethodNotAllowed)
+			return
+		}
+
+		file, _, err := r.FormFile("logfile")
+		if err != nil {
+			http.Error(w, "Error retrieving the file", http.StatusBadRequest)
+			return
+		}
 		defer file.Close()
 
-		var allEntries []map[string]interface{}
-		scanner := bufio.NewScanner(file)
-		for scanner.Scan() {
-			line := scanner.Text()
-			var logEntry map[string]interface{}
-			if err := json.Unmarshal([]byte(line), &logEntry); err == nil {
-				allEntries = append(allEntries, logEntry)
+		log.Println("File uploaded successfully. Starting to process...")
+
+		// Process the file in a separate goroutine so the HTTP request can return immediately.
+		go func() {
+			scanner := bufio.NewScanner(file)
+			linesProcessed := 0
+			for scanner.Scan() {
+				line := scanner.Bytes()
+				var entry map[string]interface{}
+				// Check if it's valid JSON before broadcasting
+				if err := json.Unmarshal(line, &entry); err == nil {
+					hub.broadcast <- line
+				}
+				linesProcessed++
 			}
-		}
-		return allLogsReadMsg{entries: allEntries}
-	}
-}
-
-// --- Step 3: Define the Update function ---
-func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	var cmd tea.Cmd
-
-	switch msg := msg.(type) {
-	case tea.WindowSizeMsg:
-		m.width = msg.Width
-		m.height = msg.Height
-
-	case tea.KeyMsg:
-		switch msg.String() {
-		case "q", "ctrl+c":
-			return m, tea.Quit
-		case "up", "k":
-			if m.selectedIndex > 0 {
-				m.selectedIndex--
+			if err := scanner.Err(); err != nil {
+				log.Println("Error reading uploaded file:", err)
 			}
-		case "down", "j":
-			// Use filteredEntries for boundary check
-			if m.selectedIndex < len(m.filteredEntries)-1 {
-				m.selectedIndex++
-			}
-		}
+			log.Printf("Finished processing %d lines.\n", linesProcessed)
+		}()
 
-	case allLogsReadMsg:
-		m.logEntries = msg.entries
-		m.filteredEntries = msg.entries // Initially, all logs are shown
-	}
+		// Respond to the client immediately
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"message": "File upload received. Processing...",
+		})
+	})
 
-	// Handle text input updates
-	m.filterInput, cmd = m.filterInput.Update(msg)
-
-	// After any input, re-filter the logs
-	filter := m.filterInput.Value()
-	var newFiltered []map[string]interface{}
-	if filter == "" {
-		newFiltered = m.logEntries
-	} else {
-		for _, log := range m.logEntries {
-			logStr, _ := json.Marshal(log)
-			if strings.Contains(strings.ToLower(string(logStr)), strings.ToLower(filter)) {
-				newFiltered = append(newFiltered, log)
-			}
-		}
-	}
-	m.filteredEntries = newFiltered
-	// Reset selectedIndex if it's out of bounds after filtering
-	if m.selectedIndex >= len(m.filteredEntries) && len(m.filteredEntries) > 0 {
-		m.selectedIndex = len(m.filteredEntries) - 1
-	} else if len(m.filteredEntries) == 0 {
-		m.selectedIndex = 0
-	}
-
-
-	return m, cmd
-}
-
-// --- Step 4: Define the View function ---
-func (m model) View() string {
-	if len(m.logEntries) == 0 {
-		return "Reading logs..."
-	}
-
-	// --- Header (Filter Input) ---
-	header := "LogLens - " + m.filterInput.View() + "\n"
-
-	// --- Left Pane (Filtered List) ---
-	var listBuilder strings.Builder
-	for i, log := range m.filteredEntries {
-		level, _ := log["level"].(string)
-		message, _ := log["message"].(string)
-		summary := fmt.Sprintf("[%s] %s", strings.ToUpper(level), message)
-		
-		// Truncate summary if it's too long
-		listWidth := m.width / 3
-		if len(summary) > listWidth {
-			summary = summary[:listWidth-3] + "..."
-		}
-
-		if i == m.selectedIndex {
-			listBuilder.WriteString(lipgloss.NewStyle().Background(lipgloss.Color("212")).Render(summary))
-		} else {
-			listBuilder.WriteString(summary)
-		}
-		listBuilder.WriteString("\n")
-	}
-
-	// --- Right Pane (Detail View with Color) ---
-	var detailStr string
-	if len(m.filteredEntries) > 0 && m.selectedIndex < len(m.filteredEntries) {
-		selectedLog := m.filteredEntries[m.selectedIndex]
-		prettyJSON, _ := json.MarshalIndent(selectedLog, "", "  ")
-		
-		// Use Glamour to render the JSON with syntax highlighting
-		// We tell it it's a JSON code block.
-		jsonForGlamour := "```json\n" + string(prettyJSON) + "\n```"
-		detailStr, _ = m.glamourRenderer.Render(jsonForGlamour)
-	} else {
-		detailStr = "No logs match the filter."
-	}
-	
-	// --- Combine ---
-	listPane := lipgloss.NewStyle().Width(m.width / 3).Render(listBuilder.String())
-	detailPane := lipgloss.NewStyle().Width(m.width - m.width/3).Render(detailStr)
-	
-	// Join the header and the panes vertically.
-	mainContent := lipgloss.JoinHorizontal(lipgloss.Top, listPane, detailPane)
-	return lipgloss.JoinVertical(lipgloss.Left, header, mainContent)
-}
-
-
-// --- Step 5: Run the application ---
-func main() {
-	p := tea.NewProgram(initialModel(), tea.WithAltScreen())
-
-	if _, err := p.Run(); err != nil {
-		fmt.Println("Error running program:", err)
-		os.Exit(1)
+	fmt.Println("Starting LogLens server on http://localhost:8080")
+	if err := http.ListenAndServe(":8080", nil); err != nil {
+		log.Fatal("ListenAndServe:", err)
 	}
 }
